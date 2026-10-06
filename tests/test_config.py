@@ -74,3 +74,41 @@ def test_missing_file_raises(tmp_path):
 def test_invalid_filename_tz_raises(tmp_path):
     with pytest.raises(ConfigError, match="filename_tz 'Mars/Olympus' is not a valid IANA time zone"):
         load_config(write(tmp_path, FULL + "filename_tz: Mars/Olympus\n"))
+
+
+def test_non_numeric_optional_value_raises_config_error(tmp_path):
+    text = FULL.replace("detector: {model_path: ../models/m.onnx}",
+                         "detector: {model_path: ../models/m.onnx, conf_min: abc}")
+    with pytest.raises(ConfigError, match="detector.conf_min"):
+        load_config(write(tmp_path, text))
+
+
+def test_malformed_standard_size_raises_config_error(tmp_path):
+    text = FULL.replace(
+        "    - {name: 10ft, length_m: 2.99, width_m: 2.44}",
+        "    - {name: 10ft, width_m: 2.44}",
+    )
+    with pytest.raises(ConfigError, match="standard_sizes"):
+        load_config(write(tmp_path, text))
+
+
+@pytest.mark.parametrize("bad", ["[3840]", "[3840, 2160, 10]", "3840", "[0, 2160]", "[3840, -1]"])
+def test_malformed_image_size_raises_config_error(tmp_path, bad):
+    text = FULL.replace("image_size: [3840, 2160]", f"image_size: {bad}")
+    with pytest.raises(ConfigError, match="image_size"):
+        load_config(write(tmp_path, text))
+
+
+@pytest.mark.parametrize("extra, match", [
+    ("geometry: {unit_height_m: 0}", "unit_height_m"),
+    ("detector: {model_path: ../models/m.onnx, conf_min: 1.5}", "conf_min"),
+    ("operations: {quiet_period_min: 0}", "quiet_period_min"),
+    ("operations: {match_iou: 0}", "match_iou"),
+])
+def test_out_of_range_values_raise_config_error(tmp_path, extra, match):
+    if extra.startswith("detector"):
+        text = FULL.replace("detector: {model_path: ../models/m.onnx}", extra)
+    else:
+        text = FULL + "\n" + extra + "\n"
+    with pytest.raises(ConfigError, match=match):
+        load_config(write(tmp_path, text))
