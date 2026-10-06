@@ -58,3 +58,42 @@ def make_calibration(P=None):
     P = default_camera() if P is None else P
     clicks = {name: tuple(project(P, xyz)[0]) for name, xyz in corner_world_points(DECK).items()}
     return build_calibration(DECK, clicks)
+
+
+def write_config(tmp_path, calibration=None):
+    import yaml
+
+    data = {
+        "image_size": list(IMAGE_SIZE),
+        "filename_tz": "UTC",
+        "db_path": "deckwatch.db",
+        "deck": {"length_m": DECK_L, "width_m": DECK_W, "wall_height_m": WALL_H, "wall_offset_m": 0.0},
+        "detector": {"model_path": "model.onnx"},
+        "geometry": {"standard_sizes": [{"name": "10ft", "length_m": 2.99, "width_m": 2.44},
+                                        {"name": "20ft", "length_m": 6.06, "width_m": 2.44}]},
+    }
+    if calibration is not None:
+        data["calibration"] = calibration.to_dict()
+    path = tmp_path / "deck.yaml"
+    path.write_text(yaml.safe_dump(data), encoding="utf-8")
+    return path
+
+
+class FakeDetector:
+    model_version = "fake-v1"
+
+    def __init__(self):
+        self.items = []
+        self.calls = 0
+
+    def detect(self, frame):
+        self.calls += 1
+        return list(self.items)
+
+
+def jpeg_bytes(size=IMAGE_SIZE):
+    import cv2
+
+    ok, buf = cv2.imencode(".jpg", np.zeros((size[1], size[0], 3), np.uint8))
+    assert ok
+    return buf.tobytes()
