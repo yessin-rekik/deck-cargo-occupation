@@ -1,3 +1,6 @@
+import pytest
+
+from deckwatch.config import ConfigError
 from deckwatch.store import Store
 
 
@@ -43,3 +46,24 @@ def test_status_reports_open_operation(tmp_path):
     st = s.status()
     assert st["state"] == "ACTIVE" and st["open_operation"]["id"] == 1
     assert st["latest_frame"]["ts"] == "2026-09-20T08:03:00Z"
+
+
+def test_missing_db_directory_raises_config_error(tmp_path):
+    with pytest.raises(ConfigError, match="cannot open database"):
+        Store(tmp_path / "nonexistent_subdir" / "d.db")
+
+
+def test_since_includes_operations_closed_or_open_after_since(tmp_path):
+    s = Store(tmp_path / "d.db")
+    # closed entirely before `since`
+    s.commit_frame(result("2026-09-20T07:00:00Z"), [], None,
+                    {"id": 1, "status": "closed", "t1": "2026-09-20T06:00:00Z", "t2": "2026-09-20T06:30:00Z"})
+    # opened before `since`, closed after it
+    s.commit_frame(result("2026-09-20T09:00:00Z"), [], None,
+                    {"id": 2, "status": "closed", "t1": "2026-09-20T06:45:00Z", "t2": "2026-09-20T09:00:00Z"})
+    # opened before `since`, still open
+    s.commit_frame(result("2026-09-20T09:05:00Z"), [], None,
+                    {"id": 3, "status": "open", "t1": "2026-09-20T06:50:00Z", "t2": None})
+    since = "2026-09-20T08:00:00Z"
+    ops = s.list_operations(since=since)
+    assert {op["id"] for op in ops} == {2, 3}

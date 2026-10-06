@@ -1,9 +1,12 @@
 """SQLite persistence for frames, items, operations and tracker state."""
 from __future__ import annotations
 
+import contextlib
 import json
 import sqlite3
 from pathlib import Path
+
+from deckwatch.config import ConfigError
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS frames (
@@ -38,12 +41,34 @@ CREATE TABLE IF NOT EXISTS state (
 
 class Store:
     def __init__(self, path: str | Path):
-        self.conn = sqlite3.connect(str(path), check_same_thread=False)
-        self.conn.execute("PRAGMA foreign_keys = ON")
-        self.conn.executescript(SCHEMA)
+        self._in_transaction = False
+        try:
+            self.conn = sqlite3.connect(str(path), check_same_thread=False, timeout=30, isolation_level=None)
+            self.conn.execute("PRAGMA foreign_keys = ON")
+            self.conn.executescript(SCHEMA)
+        except sqlite3.OperationalError as exc:
+            raise ConfigError(f"cannot open database {path}: {exc}") from exc
 
     def close(self) -> None:
         self.conn.close()
+
+    @contextlib.contextmanager
+    def write_transaction(self):
+        """BEGIN IMMEDIATE ... COMMIT/ROLLBACK. Re-entrant: nested calls join the outer transaction."""
+        if self._in_transaction:
+            yield
+            return
+        self.conn.execute("BEGIN IMMEDIATE")
+        self._in_transaction = True
+        try:
+            yield
+        except Exception:
+            self.conn.execute("ROLLBACK")
+            raise
+        else:
+            self.conn.execute("COMMIT")
+        finally:
+            self._in_transaction = False
 
     def last_ts(self) -> str | None:
         return self.conn.execute("SELECT MAX(ts) FROM frames").fetchone()[0]
@@ -68,7 +93,7 @@ class Store:
 
     def commit_frame(self, result: dict, items: list[dict], state: dict | None, operation: dict | None,
                      path: str | None = None) -> None:
-        with self.conn:
+        with self.write_transaction():
             self.conn.execute(
                 "INSERT INTO frames (ts, path, occupancy_pct, change_pct, flags, calibration_version,"
                 " model_version, result) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
@@ -96,8 +121,15 @@ class Store:
         if since is None:
             rows = self.conn.execute("SELECT data FROM operations ORDER BY id")
         else:
-            rows = self.conn.execute("SELECT data FROM operations WHERE t1 >= ? ORDER BY id", (since,))
+            rows = self.conn.execute(
+                "SELECT data FROM operations WHERE t1 >= ? OR t2 >= ? OR status = 'open' ORDER BY id",
+                (since, since),
+            )
         return [json.loads(r[0]) for r in rows]
+
+    def max_operation_id(self) -> int:
+        row = self.conn.execute("SELECT MAX(id) FROM operations").fetchone()
+        return row[0] or 0
 
     def status(self) -> dict:
         state = self.load_state() or {}
