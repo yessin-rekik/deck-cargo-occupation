@@ -69,3 +69,8 @@ def test_non_positive_deck_dimension_raises(tmp_path):
 def test_missing_file_raises(tmp_path):
     with pytest.raises(ConfigError, match="not found"):
         load_config(tmp_path / "nope.yaml")
+
+
+def test_invalid_filename_tz_raises(tmp_path):
+    with pytest.raises(ConfigError, match="filename_tz 'Mars/Olympus' is not a valid IANA time zone"):
+        load_config(write(tmp_path, FULL + "filename_tz: Mars/Olympus\n"))

@@ -80,3 +80,10 @@ def test_missing_frame_exits_2(tmp_path, config_path, capsys):
 def test_missing_config_exits_3(tmp_path, capsys):
     code, out = run(capsys, "--config", str(tmp_path / "nope.yaml"), "status")
     assert code == 3 and out["error"] == "config_error"
+
+
+def test_invalid_filename_tz_exits_3(tmp_path, capsys):
+    path = write_config(tmp_path, make_calibration())
+    path.write_text(path.read_text(encoding="utf-8") + "filename_tz: Mars/Olympus\n", encoding="utf-8")
+    code, out = run(capsys, "--config", str(path), "status")
+    assert code == 3 and out["error"] == "config_error"

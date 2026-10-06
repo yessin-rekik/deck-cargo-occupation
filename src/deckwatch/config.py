@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import yaml
 
@@ -152,10 +153,16 @@ def load_config(path: str | Path) -> Config:
         min_points=int(dr.get("min_points", 2)),
     )
 
+    filename_tz = str(raw.get("filename_tz", "UTC"))
+    try:
+        ZoneInfo(filename_tz)
+    except (ZoneInfoNotFoundError, ValueError) as exc:
+        raise ConfigError(f"filename_tz '{filename_tz}' is not a valid IANA time zone") from exc
+
     return Config(
         path=path,
         image_size=(int(width_px), int(height_px)),
-        filename_tz=str(raw.get("filename_tz", "UTC")),
+        filename_tz=filename_tz,
         deck=deck,
         detector=detector,
         geometry=geometry,
