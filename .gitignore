@@ -1,0 +1,11 @@
+venv/
+dataset/
+models/
+runs/
+*.db
+*.onnx
+*.pt
+__pycache__/
+*.pyc
+.claude/settings.local.json
+training/cvat/data/
