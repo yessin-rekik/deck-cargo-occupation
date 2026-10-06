@@ -44,3 +44,17 @@ def box_keypoints(P, x0, y0, lx, wy, h):
         (x0 + lx, y0, 0.0),      # K5 base_near_right
     ]
     return project(P, world)
+
+
+from deckwatch.config import DeckConfig  # noqa: E402
+
+DECK = DeckConfig(length_m=DECK_L, width_m=DECK_W, wall_height_m=WALL_H, wall_offset_m=0.0)
+
+
+def make_calibration(P=None):
+    """Calibration built from exact clicks of all 8 points under camera P."""
+    from deckwatch.calibration import build_calibration, corner_world_points
+
+    P = default_camera() if P is None else P
+    clicks = {name: tuple(project(P, xyz)[0]) for name, xyz in corner_world_points(DECK).items()}
+    return build_calibration(DECK, clicks)
