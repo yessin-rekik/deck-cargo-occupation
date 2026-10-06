@@ -132,3 +132,29 @@ def test_gap_while_active_is_flagged():
     ups = run(frames)
     assert "gap_during_operation" in ups[4].operation["flags"]
     assert ups[-1].event == "T2" and ups[-1].operation["t2"] == ts(30)
+
+
+def test_change_in_confirming_frame_extends_t2():
+    frames = [obs(0, item(A)), obs(3, item(A)), obs(6, item(A), item(B))]
+    frames += [obs(m, item(A), item(B), item(C)) for m in range(9, 42, 3)]
+    ups = run(frames)
+    assert events(ups) == [(3, "T1"), (13, "T2")]       # T1 confirmed at minute 9, T2 at minute 39
+    op = ups[13].operation
+    assert op["t1"] == ts(6) and op["t2"] == ts(9) and op["items_appeared"] == 2
+
+
+def test_two_different_one_frame_artifacts_are_ignored():
+    frames = [obs(0, item(A)), obs(3, item(A)), obs(6, item(A), item(C)), obs(9, item(A), item(D)),
+              obs(12, item(A)), obs(15, item(A))]
+    ups = run(frames)
+    assert events(ups) == []
+    assert all(u.state == "IDLE" for u in ups)
+
+
+def test_one_frame_dropout_while_active_does_not_move_t2():
+    frames = [obs(0, item(A)), obs(3, item(A))] + [obs(m, item(A), item(B)) for m in range(6, 30, 3)]
+    frames += [obs(30, item(A)), obs(33, item(A), item(B)), obs(36, item(A), item(B))]
+    ups = run(frames)
+    assert events(ups) == [(3, "T1"), (12, "T2")]       # closes at minute 36 (36 - 6 >= 30)
+    op = ups[12].operation
+    assert op["t2"] == ts(6) and op["items_appeared"] == 1 and op["occupancy_after"] == 2.5

@@ -96,43 +96,93 @@ class OperationTracker:
             "stable_items": _enc(obs.items),
             "stable_occ": [obs.occupancy_pct],
             "last_stable_ts": to_iso(obs.ts),
-            "pending_ts": None,
+            "pending": None,
             "active": None,
         }
 
     def _step_idle(self, s: dict, obs: FrameObs, gap: bool):
-        m2 = self._changed_m2(_dec(s["stable_items"]), obs.items)
-        pct = 100.0 * m2 / self.area
-        changed = m2 > self.cfg.change_min_m2
+        d_S = self._changed_m2(_dec(s["stable_items"]), obs.items)
+        pct = 100.0 * d_S / self.area
+        changed = d_S > self.cfg.change_min_m2
+
         if changed and gap:
             op = self._open(s, t1=obs.ts, flags=["t1_t2_uncertain"])
             op["last_change_ts"] = to_iso(obs.ts)
             return s, OpUpdate("IDLE", pct, "T2", self._close(s, op, [obs.occupancy_pct], obs))
-        if changed and s["pending_ts"] is not None:
-            op = self._open(s, t1=from_iso(s["pending_ts"]), flags=[])
-            op.update(last_change_ts=s["pending_ts"], running=_enc(obs.items), quiet_occ=[obs.occupancy_pct])
-            s.update(mode="ACTIVE", active=op, pending_ts=None)
-            return s, OpUpdate("ACTIVE", pct, "T1", _public(op))
-        if changed:
-            s["pending_ts"] = to_iso(obs.ts)
+
+        if not changed:
+            s["pending"] = None
+            s["stable_occ"] = (s["stable_occ"] + [obs.occupancy_pct])[-3:]
+            s["last_stable_ts"] = to_iso(obs.ts)
             return s, OpUpdate("IDLE", pct, None, None)
-        s.update(pending_ts=None, stable_occ=(s["stable_occ"] + [obs.occupancy_pct])[-3:],
-                 last_stable_ts=to_iso(obs.ts))
+
+        # changed and no gap
+        if s["pending"] is None:
+            s["pending"] = {
+                "first_ts": to_iso(obs.ts),
+                "last_ts": to_iso(obs.ts),
+                "items": _enc(obs.items),
+            }
+            return s, OpUpdate("IDLE", pct, None, None)
+
+        # pending exists: compare against pending items
+        d_P = self._changed_m2(_dec(s["pending"]["items"]), obs.items)
+        if d_P < d_S:
+            # CONFIRM: current is closer to pending than to baseline
+            op = self._open(s, t1=from_iso(s["pending"]["first_ts"]), flags=[])
+            last_change_ts = to_iso(obs.ts) if d_P > self.cfg.change_min_m2 else s["pending"]["last_ts"]
+            op.update(last_change_ts=last_change_ts, running=_enc(obs.items), quiet_occ=[obs.occupancy_pct])
+            s.update(mode="ACTIVE", active=op, pending=None)
+            return s, OpUpdate("ACTIVE", pct, "T1", _public(op))
+
+        # re-arm pending with current
+        s["pending"] = {
+            "first_ts": to_iso(obs.ts),
+            "last_ts": to_iso(obs.ts),
+            "items": _enc(obs.items),
+        }
         return s, OpUpdate("IDLE", pct, None, None)
 
     def _step_active(self, s: dict, obs: FrameObs, gap: bool):
         op = dict(s["active"])
-        m2 = self._changed_m2(_dec(op["running"]), obs.items)
-        pct = 100.0 * m2 / self.area
+        d_R = self._changed_m2(_dec(op["running"]), obs.items)
+        pct = 100.0 * d_R / self.area
+
         if gap and "gap_during_operation" not in op["flags"]:
             op["flags"] = op["flags"] + ["gap_during_operation"]
-        if m2 > self.cfg.change_min_m2:
-            op.update(last_change_ts=to_iso(obs.ts), quiet_occ=[obs.occupancy_pct])
+
+        if op.get("pending") is None:
+            if d_R <= self.cfg.change_min_m2:
+                # Quiet frame: append to quiet_occ, keep running
+                op["quiet_occ"] = op["quiet_occ"] + [obs.occupancy_pct]
+            else:
+                # Set pending
+                op["pending"] = {
+                    "ts": to_iso(obs.ts),
+                    "items": _enc(obs.items),
+                }
         else:
-            op["quiet_occ"] = op["quiet_occ"] + [obs.occupancy_pct]
-        op["running"] = _enc(obs.items)
-        if obs.ts - from_iso(op["last_change_ts"]) >= self.quiet:
+            # pending exists
+            d_P = self._changed_m2(_dec(op["pending"]["items"]), obs.items)
+            if d_R <= self.cfg.change_min_m2:
+                # Flicker (reverted)
+                op["pending"] = None
+                op["quiet_occ"] = op["quiet_occ"] + [obs.occupancy_pct]
+            elif d_P < d_R:
+                # CONFIRM
+                last_change_ts = to_iso(obs.ts) if d_P > self.cfg.change_min_m2 else op["pending"]["ts"]
+                op.update(last_change_ts=last_change_ts, running=_enc(obs.items), quiet_occ=[obs.occupancy_pct], pending=None)
+            else:
+                # re-arm pending
+                op["pending"] = {
+                    "ts": to_iso(obs.ts),
+                    "items": _enc(obs.items),
+                }
+
+        # Check for close only if pending is None
+        if op.get("pending") is None and obs.ts - from_iso(op["last_change_ts"]) >= self.quiet:
             return s, OpUpdate("IDLE", pct, "T2", self._close(s, op, op["quiet_occ"], obs))
+
         s["active"] = op
         return s, OpUpdate("ACTIVE", pct, None, _public(op))
 
