@@ -89,10 +89,11 @@ Grounding DINO / SAM) live in a separate `training` extra.
 cargo area, as seen by the camera). X runs across the deck to the right, Y runs along it away
 from the camera, Z is up. So F1 = (0, L, 0), F2 = (W, L, 0), F3 = (W, 0, 0), F4 = (0, 0, 0).
 
-**User-supplied measurements** (stored in `deck.yaml`):
+**User-supplied measurements** (stored in `deck.yaml`; all required, with no defaults. DeckWatch
+never assumes deck dimensions and refuses to start until they are filled in):
 - Cargo-area length and width.
 - Wall height above the deck.
-- The wall-top points' horizontal offset from the floor corners (default 0, i.e. directly above).
+- The wall-top points' horizontal offset from the floor corners (0 if directly above).
 - The spacing of the yellow grid lines, used for substitute points.
 
 **8 points, clicked once on an empty-deck raw frame:**

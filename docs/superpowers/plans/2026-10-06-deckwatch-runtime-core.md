@@ -66,6 +66,10 @@ onnxruntime (CPU or GPU extra), FastAPI + uvicorn + python-multipart, pytest + h
   - Stored and emitted as UTC `YYYY-MM-DDTHH:MM:SSZ`.
   - Filename timestamps (`*_YYYYMMDD_HHMMSS*.jpg`) are interpreted in `filename_tz` (default
     `UTC`). The CAMO1 overlay shows local time, UTC+03:30.
+- **No deck dimensions are assumed anywhere in product code or shipped config.** `deck.length_m`,
+  `deck.width_m`, `deck.wall_height_m` and `deck.wall_offset_m` are required in `deck.yaml` and
+  have no defaults. `config/deck.example.yaml` ships them empty (`null`), so loading it fails with
+  a `ConfigError` telling the user to fill them in. Tests use their own synthetic deck (`tests/synth.py`).
 - Exit codes: 0 ok, 2 frame error (`PipelineError`), 3 config error (`ConfigError`).
 - HTTP statuses: 422 unreadable image / wrong resolution / invalid ts; 409 out of order; 404 frame
   not found.
@@ -260,7 +264,8 @@ git commit -m "chore: scaffold deckwatch package and synthetic test camera"
 - Produces, in `deckwatch.config`:
   - `ConfigError(Exception)`
   - `StandardSize(name, length_m, width_m)`
-  - `DeckConfig(length_m, width_m, wall_height_m, wall_offset_m=0.0)`
+  - `DeckConfig(length_m, width_m, wall_height_m, wall_offset_m)`. All four are required, with no
+    defaults: `length_m`, `width_m` and `wall_height_m` must be > 0, and `wall_offset_m` must be >= 0.
   - `DetectorConfig(model_path: Path, imgsz=1280, conf_min=0.4, nms_iou=0.5, kp_conf_min=0.5)`
   - `GeometryConfig(unit_height_m=2.6, max_stack=3, default_height_m={"container": 2.6, "other": 1.0}, size_tol=0.15, standard_sizes=())`
   - `OperationsConfig(change_min_m2=2.0, quiet_period_min=30.0, gap_max_min=15.0, match_iou=0.3)`
@@ -281,43 +286,64 @@ from deckwatch.config import ConfigError, load_config
 
 EXAMPLE = Path(__file__).resolve().parents[1] / "config" / "deck.example.yaml"
 
+FULL = """
+image_size: [3840, 2160]
+deck: {length_m: 61.5, width_m: 19.2, wall_height_m: 2.9, wall_offset_m: 0.4}
+detector: {model_path: ../models/m.onnx}
+geometry:
+  standard_sizes:
+    - {name: 10ft, length_m: 2.99, width_m: 2.44}
+"""
 
-def test_example_config_loads_with_defaults():
-    cfg = load_config(EXAMPLE)
+
+def write(tmp_path, text):
+    p = tmp_path / "deck.yaml"
+    p.write_text(text, encoding="utf-8")
+    return p
+
+
+def test_full_config_loads_with_defaults(tmp_path):
+    cfg = load_config(write(tmp_path, FULL))
     assert cfg.image_size == (3840, 2160)
     assert cfg.filename_tz == "UTC"
-    assert cfg.deck.wall_offset_m == 0.0
+    assert (cfg.deck.length_m, cfg.deck.width_m, cfg.deck.wall_height_m, cfg.deck.wall_offset_m) == (61.5, 19.2, 2.9, 0.4)
     assert cfg.detector.conf_min == 0.4
     assert cfg.geometry.default_height_m == {"container": 2.6, "other": 1.0}
-    assert [s.name for s in cfg.geometry.standard_sizes] == ["10ft", "20ft"]
+    assert [s.name for s in cfg.geometry.standard_sizes] == ["10ft"]
     assert cfg.operations.change_min_m2 == 2.0
     assert cfg.calibration is None
 
 
-def test_relative_paths_resolve_against_config_dir():
-    cfg = load_config(EXAMPLE)
-    assert cfg.detector.model_path == EXAMPLE.parent / "../models/deckwatch-pose.onnx"
-    assert cfg.db_path == EXAMPLE.parent / "../deckwatch.db"
-    assert cfg.drift.refs_dir == EXAMPLE.parent / "drift_refs"
+def test_relative_paths_resolve_against_config_dir(tmp_path):
+    cfg = load_config(write(tmp_path, FULL))
+    assert cfg.detector.model_path == tmp_path / "../models/m.onnx"
+    assert cfg.db_path == tmp_path / "../deckwatch.db"
+    assert cfg.drift.refs_dir == tmp_path / "drift_refs"
 
 
-def test_missing_required_key_raises(tmp_path):
-    p = tmp_path / "deck.yaml"
-    p.write_text("image_size: [3840, 2160]\ndeck: {length_m: 60, width_m: 20}\n", encoding="utf-8")
-    with pytest.raises(ConfigError, match="deck.wall_height_m"):
-        load_config(p)
+def test_shipped_example_has_no_deck_dimensions():
+    with pytest.raises(ConfigError, match="deck.length_m must be provided"):
+        load_config(EXAMPLE)
+
+
+@pytest.mark.parametrize("entry", ["length_m: 61.5", "width_m: 19.2", "wall_height_m: 2.9", "wall_offset_m: 0.4"])
+def test_every_deck_dimension_is_required(tmp_path, entry):
+    key = entry.split(":")[0]
+    text = FULL.replace(entry, f"unused_{entry}")
+    with pytest.raises(ConfigError, match=f"deck.{key}"):
+        load_config(write(tmp_path, text))
+
+
+def test_null_deck_dimension_raises(tmp_path):
+    with pytest.raises(ConfigError, match="deck.width_m must be provided"):
+        load_config(write(tmp_path, FULL.replace("width_m: 19.2", "width_m: null")))
 
 
 def test_non_positive_deck_dimension_raises(tmp_path):
-    p = tmp_path / "deck.yaml"
-    p.write_text(
-        "image_size: [3840, 2160]\n"
-        "deck: {length_m: 0, width_m: 20, wall_height_m: 3}\n"
-        "detector: {model_path: m.onnx}\n",
-        encoding="utf-8",
-    )
-    with pytest.raises(ConfigError, match="deck.length_m"):
-        load_config(p)
+    with pytest.raises(ConfigError, match="deck.length_m must be > 0"):
+        load_config(write(tmp_path, FULL.replace("length_m: 61.5", "length_m: 0")))
+    with pytest.raises(ConfigError, match="deck.wall_offset_m must be >= 0"):
+        load_config(write(tmp_path, FULL.replace("wall_offset_m: 0.4", "wall_offset_m: -1")))
 
 
 def test_missing_file_raises(tmp_path):
@@ -334,16 +360,17 @@ Expected: FAIL with `ModuleNotFoundError: No module named 'deckwatch.config'`.
 
 ```yaml
 # DeckWatch configuration. Relative paths are resolved against this file's directory.
-# Copy to config/deck.yaml and replace the deck measurements with values measured on the vessel.
+# Copy to config/deck.yaml and fill in every `deck` value with measurements taken on the vessel.
+# DeckWatch refuses to start while any deck value is empty.
 image_size: [3840, 2160]
 filename_tz: UTC          # dataset filenames are UTC; the CAMO1 overlay shows local time (UTC+03:30)
 db_path: ../deckwatch.db
 
-deck:                     # metres; PLACEHOLDER values until measured
-  length_m: 60.0          # cargo area along the deck (near edge -> far edge)
-  width_m: 20.0           # cargo area across the deck
-  wall_height_m: 3.0      # wall top above the deck surface
-  wall_offset_m: 0.0      # wall tops' horizontal offset outward from the floor corners
+deck:                     # metres, measured on the vessel - REQUIRED, no defaults
+  length_m:               # brown cargo area along the deck (near edge -> far edge)
+  width_m:                # brown cargo area across the deck
+  wall_height_m:          # wall top above the deck surface
+  wall_offset_m:          # wall tops' horizontal offset outward from the floor corners (0 if directly above)
 
 detector:
   model_path: ../models/deckwatch-pose.onnx
@@ -403,10 +430,11 @@ class StandardSize:
 
 @dataclass(frozen=True)
 class DeckConfig:
+    """Cargo-area measurements from the vessel. All required - DeckWatch never assumes them."""
     length_m: float
     width_m: float
     wall_height_m: float
-    wall_offset_m: float = 0.0
+    wall_offset_m: float
 
 
 @dataclass(frozen=True)
@@ -479,15 +507,21 @@ def load_config(path: str | Path) -> Config:
     base = path.parent
 
     width_px, height_px = _req(raw, "image_size")
-    deck = DeckConfig(
-        length_m=float(_req(raw, "deck.length_m")),
-        width_m=float(_req(raw, "deck.width_m")),
-        wall_height_m=float(_req(raw, "deck.wall_height_m")),
-        wall_offset_m=float(raw["deck"].get("wall_offset_m", 0.0)),
-    )
+    dims = {}
+    for name in ("length_m", "width_m", "wall_height_m", "wall_offset_m"):
+        value = _req(raw, f"deck.{name}")
+        if value is None:
+            raise ConfigError(f"deck.{name} must be provided in deck.yaml (measured on the vessel)")
+        try:
+            dims[name] = float(value)
+        except (TypeError, ValueError) as exc:
+            raise ConfigError(f"deck.{name} must be a number, got {value!r}") from exc
     for name in ("length_m", "width_m", "wall_height_m"):
-        if getattr(deck, name) <= 0:
+        if dims[name] <= 0:
             raise ConfigError(f"deck.{name} must be > 0")
+    if dims["wall_offset_m"] < 0:
+        raise ConfigError("deck.wall_offset_m must be >= 0")
+    deck = DeckConfig(**dims)
 
     det = raw.get("detector") or {}
     detector = DetectorConfig(
@@ -545,7 +579,7 @@ def load_config(path: str | Path) -> Config:
 - [ ] **Step 5: Run the tests to verify they pass**
 
 Run: `venv/Scripts/python -m pytest tests/test_config.py -v`
-Expected: 5 passed.
+Expected: 11 passed.
 
 - [ ] **Step 6: Commit**
 
@@ -692,7 +726,7 @@ Expected: FAIL with `ImportError` (`DECK` / `deckwatch.calibration` missing).
 
 from deckwatch.config import DeckConfig  # noqa: E402
 
-DECK = DeckConfig(length_m=DECK_L, width_m=DECK_W, wall_height_m=WALL_H)
+DECK = DeckConfig(length_m=DECK_L, width_m=DECK_W, wall_height_m=WALL_H, wall_offset_m=0.0)
 
 
 def make_calibration(P=None):
@@ -2334,7 +2368,7 @@ def write_config(tmp_path, calibration=None):
         "image_size": list(IMAGE_SIZE),
         "filename_tz": "UTC",
         "db_path": "deckwatch.db",
-        "deck": {"length_m": DECK_L, "width_m": DECK_W, "wall_height_m": WALL_H},
+        "deck": {"length_m": DECK_L, "width_m": DECK_W, "wall_height_m": WALL_H, "wall_offset_m": 0.0},
         "detector": {"model_path": "model.onnx"},
         "geometry": {"standard_sizes": [{"name": "10ft", "length_m": 2.99, "width_m": 2.44},
                                         {"name": "20ft", "length_m": 6.06, "width_m": 2.44}]},
@@ -2843,10 +2877,10 @@ Expected: 7 passed.
 
 - [ ] **Step 5: Smoke-test the installed entry point**
 
-Run: `venv/Scripts/deckwatch --config config/deck.example.yaml status`
-Expected: `{"state": "IDLE", "latest_frame": null, "open_operation": null}` and exit 0. This
-creates `deckwatch.db` in the repo root, which is git-ignored; delete it afterwards with
-`rm deckwatch.db`.
+Run: `venv/Scripts/deckwatch --config config/deck.example.yaml status; echo "exit=$?"`
+Expected:
+`{"error": "config_error", "message": "deck.length_m must be provided in deck.yaml (measured on the vessel)"}`
+followed by `exit=3`. The unfilled example config is refused.
 
 - [ ] **Step 6: Commit**
 
