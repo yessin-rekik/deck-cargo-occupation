@@ -59,3 +59,27 @@ def test_frame_lookup_normalises_ts(client):
     assert client.get("/frames/2026-09-20T11:30:00+03:30").json()["ts"] == "2026-09-20T08:00:00Z"
     assert client.get("/frames/2026-09-20T08:00:00").status_code == 200
     assert client.get("/frames/not-a-time").status_code == 422
+
+
+def test_unexpected_exception_returns_json_500(tmp_path):
+    cfg = load_config(write_config(tmp_path, make_calibration()))
+
+    class Boom:
+        config = cfg
+
+        def analyze(self, *a, **k):
+            raise RuntimeError("boom")
+
+    client = TestClient(create_app(Boom()), raise_server_exceptions=False)
+    r = post(client, "2026-09-20T08:00:00Z")
+    assert r.status_code == 500
+    assert r.json() == {"error": "internal_error", "message": "boom"}
+
+
+def test_oversized_upload_returns_413(client, monkeypatch):
+    import deckwatch.api as api
+
+    monkeypatch.setattr(api, "MAX_UPLOAD_BYTES", 10)
+    r = post(client, "2026-09-20T08:00:00Z", data=b"x" * 20)
+    assert r.status_code == 413
+    assert r.json()["error"] == "payload_too_large"

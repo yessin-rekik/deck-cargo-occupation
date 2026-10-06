@@ -87,3 +87,29 @@ def test_invalid_filename_tz_exits_3(tmp_path, capsys):
     path.write_text(path.read_text(encoding="utf-8") + "filename_tz: Mars/Olympus\n", encoding="utf-8")
     code, out = run(capsys, "--config", str(path), "status")
     assert code == 3 and out["error"] == "config_error"
+
+
+def test_invalid_filename_date_exits_2(tmp_path, config_path, capsys):
+    frame = tmp_path / "periodic_20261399_999999.jpg"
+    frame.write_bytes(jpeg_bytes())
+    code, out = run(capsys, "--config", str(config_path), "analyze", str(frame))
+    assert code == 2 and out["error"] == "invalid_timestamp"
+
+
+def test_unexpected_exception_exits_1_with_json(tmp_path, config_path, capsys, monkeypatch):
+    frame = tmp_path / "periodic_20260920_080000.jpg"
+    frame.write_bytes(jpeg_bytes())
+
+    class Boom:
+        config = type("C", (), {"filename_tz": "UTC"})()
+
+        def analyze(self, *a, **k):
+            raise RuntimeError("boom")
+
+    monkeypatch.setattr(cli, "build_pipeline", lambda p: Boom())
+    code = cli.main(["--config", str(config_path), "analyze", str(frame)])
+    captured = capsys.readouterr()
+    out = json.loads(captured.out)
+    assert code == 1
+    assert out == {"error": "internal_error", "message": "boom"}
+    assert "RuntimeError" in captured.err

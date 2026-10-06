@@ -4,6 +4,8 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import sys
+import traceback
 from datetime import datetime, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -14,7 +16,7 @@ from deckwatch.store import Store
 from deckwatch.timeutil import parse_timestamp, to_iso
 
 TS_PATTERN = re.compile(r"(\d{8})_(\d{6})")
-EXIT_OK, EXIT_FRAME_ERROR, EXIT_CONFIG_ERROR = 0, 2, 3
+EXIT_OK, EXIT_INTERNAL_ERROR, EXIT_FRAME_ERROR, EXIT_CONFIG_ERROR = 0, 1, 2, 3
 
 
 def parse_ts(path: str | Path, explicit: str | None, filename_tz: str) -> datetime:
@@ -25,7 +27,10 @@ def parse_ts(path: str | Path, explicit: str | None, filename_tz: str) -> dateti
             raise PipelineError("invalid_timestamp", f"invalid --ts value: {explicit}", 422) from exc
     m = TS_PATTERN.search(Path(path).name)
     if m:
-        return datetime.strptime(m.group(1) + m.group(2), "%Y%m%d%H%M%S").replace(tzinfo=ZoneInfo(filename_tz))
+        try:
+            return datetime.strptime(m.group(1) + m.group(2), "%Y%m%d%H%M%S").replace(tzinfo=ZoneInfo(filename_tz))
+        except ValueError as exc:
+            raise PipelineError("invalid_timestamp", f"invalid timestamp in filename: {path}", 422) from exc
     return datetime.fromtimestamp(Path(path).stat().st_mtime, tz=timezone.utc)
 
 
@@ -44,9 +49,13 @@ def _analyze(args) -> int:
     frame = Path(args.frame)
     if not frame.is_file():
         raise PipelineError("unreadable_image", f"file not found: {frame}", 422)
+    try:
+        data = frame.read_bytes()
+    except OSError as exc:
+        raise PipelineError("unreadable_image", f"cannot read {frame}: {exc}", 422) from exc
     pipeline = build_pipeline(args.config)
     ts = parse_ts(frame, args.ts, pipeline.config.filename_tz)
-    _print(pipeline.analyze(frame.read_bytes(), ts, path=str(frame), include_items=args.items))
+    _print(pipeline.analyze(data, ts, path=str(frame), include_items=args.items))
     return EXIT_OK
 
 
@@ -60,7 +69,7 @@ def main(argv: list[str] | None = None) -> int:
     a.add_argument("--items", action="store_true", help="include per-item details")
     sub.add_parser("status", help="current state, latest frame and open operation")
     o = sub.add_parser("operations", help="list operations")
-    o.add_argument("--since", help="ISO 8601; only operations with t1 >= since")
+    o.add_argument("--since", help="ISO 8601; operations started, ended, or still open since")
     s = sub.add_parser("serve", help="run the HTTP API")
     s.add_argument("--host", default="127.0.0.1")
     s.add_argument("--port", type=int, default=8000)
@@ -86,3 +95,7 @@ def main(argv: list[str] | None = None) -> int:
     except PipelineError as exc:
         _print(exc.to_dict())
         return EXIT_FRAME_ERROR
+    except Exception as exc:
+        _print({"error": "internal_error", "message": str(exc)})
+        traceback.print_exc(file=sys.stderr)
+        return EXIT_INTERNAL_ERROR

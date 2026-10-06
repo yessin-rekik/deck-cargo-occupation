@@ -7,6 +7,8 @@ from fastapi.responses import JSONResponse
 from deckwatch.pipeline import Pipeline, PipelineError
 from deckwatch.timeutil import parse_timestamp, to_iso
 
+MAX_UPLOAD_BYTES = 30 * 1024 * 1024
+
 
 def create_app(pipeline: Pipeline) -> FastAPI:
     app = FastAPI(title="DeckWatch")
@@ -15,13 +17,23 @@ def create_app(pipeline: Pipeline) -> FastAPI:
     def _pipeline_error(request: Request, exc: PipelineError):
         return JSONResponse(status_code=exc.http_status, content=exc.to_dict())
 
+    @app.exception_handler(Exception)
+    def _unexpected_error(request: Request, exc: Exception):
+        return JSONResponse(status_code=500, content={"error": "internal_error", "message": str(exc)})
+
     @app.post("/frames")
     def post_frame(file: UploadFile = File(...), ts: str = Form(...), items: bool = Query(False)):
+        data = file.file.read(MAX_UPLOAD_BYTES + 1)
+        if len(data) > MAX_UPLOAD_BYTES:
+            return JSONResponse(
+                status_code=413,
+                content={"error": "payload_too_large", "message": f"upload exceeds {MAX_UPLOAD_BYTES} bytes"},
+            )
         try:
             dt = parse_timestamp(ts, pipeline.config.filename_tz)
         except ValueError as exc:
             raise PipelineError("invalid_timestamp", f"invalid ts: {ts}", 422) from exc
-        return pipeline.analyze(file.file.read(), dt, path=file.filename, include_items=items)
+        return pipeline.analyze(data, dt, path=file.filename, include_items=items)
 
     @app.get("/status")
     def status():
