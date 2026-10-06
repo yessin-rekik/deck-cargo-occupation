@@ -57,3 +57,31 @@ def test_load_detector_rejects_wrong_keypoints(tmp_path):
         {"model_version": "x", "class_names": NAMES, "keypoint_names": ["a"], "imgsz": 1280}), encoding="utf-8")
     with pytest.raises(ConfigError, match="keypoint"):
         load_detector(DetectorConfig(model_path=tmp_path / "m.onnx"))
+
+
+def write_model(tmp_path, meta, onnx_bytes=b""):
+    (tmp_path / "m.onnx").write_bytes(onnx_bytes)
+    (tmp_path / "m.json").write_text(meta if isinstance(meta, str) else json.dumps(meta), encoding="utf-8")
+    return DetectorConfig(model_path=tmp_path / "m.onnx")
+
+
+GOOD_META = {"model_version": "x", "class_names": NAMES, "imgsz": 1280,
+             "keypoint_names": ["top_far_left", "top_far_right", "top_near_right", "top_near_left",
+                                "base_near_left", "base_near_right"]}
+
+
+def test_load_detector_rejects_corrupt_metadata_json(tmp_path):
+    with pytest.raises(ConfigError, match="invalid model metadata JSON"):
+        load_detector(write_model(tmp_path, "{not json"))
+
+
+@pytest.mark.parametrize("key", ["class_names", "model_version"])
+def test_load_detector_rejects_missing_metadata_key(tmp_path, key):
+    meta = {k: v for k, v in GOOD_META.items() if k != key}
+    with pytest.raises(ConfigError, match=f"missing key '{key}'"):
+        load_detector(write_model(tmp_path, meta))
+
+
+def test_load_detector_rejects_corrupt_model_file(tmp_path):
+    with pytest.raises(ConfigError, match="cannot load model"):
+        load_detector(write_model(tmp_path, GOOD_META, onnx_bytes=b"not an onnx model"))

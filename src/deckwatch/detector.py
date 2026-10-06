@@ -79,8 +79,17 @@ def load_detector(cfg: DetectorConfig) -> OnnxPoseDetector:
         raise ConfigError(f"model not found: {model}")
     if not meta_path.is_file():
         raise ConfigError(f"model metadata not found: {meta_path}")
-    meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    try:
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise ConfigError(f"invalid model metadata JSON in {meta_path}: {exc}") from exc
+    for key in ("class_names", "model_version"):
+        if key not in meta:
+            raise ConfigError(f"model metadata {meta_path} missing key '{key}'")
     if list(meta.get("keypoint_names", [])) != list(KEYPOINT_NAMES):
         raise ConfigError(f"model keypoint_names {meta.get('keypoint_names')} do not match {list(KEYPOINT_NAMES)}")
-    return OnnxPoseDetector(model, meta["class_names"], meta["model_version"], int(meta.get("imgsz", cfg.imgsz)),
-                            cfg.conf_min, cfg.nms_iou)
+    try:
+        return OnnxPoseDetector(model, meta["class_names"], meta["model_version"], int(meta.get("imgsz", cfg.imgsz)),
+                                cfg.conf_min, cfg.nms_iou)
+    except Exception as exc:
+        raise ConfigError(f"cannot load model {model}: {exc}") from exc
