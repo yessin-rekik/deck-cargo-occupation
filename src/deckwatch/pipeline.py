@@ -1,6 +1,7 @@
 """analyze(frame, ts): decode -> drift check -> detect -> place -> occupancy -> T1/T2 -> store."""
 from __future__ import annotations
 
+import sqlite3
 import threading
 from datetime import datetime
 
@@ -93,29 +94,52 @@ class Pipeline:
                               for it in self.detector.detect(img)) if p is not None]
         occ = compute_occupancy(placed, self.cal.cargo_area)
 
-        state = self.store.load_state()
-        if drift_status == "suspected":
-            mode, change_pct, event, operation = (state or {}).get("mode", "IDLE"), None, None, None
-            state = None                     # leave the stored tracker state untouched
-        else:
-            obs = FrameObs(ts, occ.pct, [(p.footprint, p.height_m) for p in occ.items])
-            state, upd = self.tracker.step(state, obs)
-            mode, change_pct, event, operation = upd.state, round(upd.change_pct, 2), upd.event, upd.operation
+        # Cross-process atomicity: re-check inside the write transaction (BEGIN IMMEDIATE),
+        # since another process may have committed this or a later ts between the cheap
+        # checks above and here.
+        with self.store.write_transaction():
+            existing = self.store.get_frame(ts_iso, include_items=include_items)
+            if existing is not None:
+                return existing
+            last = self.store.last_ts()
+            if last is not None and ts_iso < last:
+                raise PipelineError(
+                    "out_of_order", f"frame {ts_iso} is older than the last stored frame {last}", 409
+                )
 
-        result = {
-            "ts": ts_iso,
-            "occupancy_pct": round(occ.pct, 2),
-            "occupied_m2": round(occ.m2, 2),
-            "count_container": occ.count_by_class.get("container", 0),
-            "count_other": occ.count_by_class.get("other", 0),
-            "count_by_stack_level": occ.count_by_stack_level,
-            "change_pct": change_pct,
-            "state": mode,
-            "operation": {"event": event, **operation} if operation else None,
-            "flags": flags,
-            "calibration_version": self.cal.version,
-            "model_version": getattr(self.detector, "model_version", "unknown"),
-        }
-        items = [p.to_dict() for p in occ.items]
-        self.store.commit_frame(result, items, state, operation, path)
-        return {**result, "items": items} if include_items else result
+            state = self.store.load_state()
+            state_was_none = state is None
+            if drift_status == "suspected":
+                mode, change_pct, event, operation = (state or {}).get("mode", "IDLE"), None, None, None
+                state = None                     # leave the stored tracker state untouched
+            else:
+                obs = FrameObs(ts, occ.pct, [(p.footprint, p.height_m) for p in occ.items])
+                state, upd = self.tracker.step(state, obs)
+                if state_was_none:
+                    state["next_op_id"] = max(state["next_op_id"], self.store.max_operation_id() + 1)
+                mode, change_pct, event, operation = upd.state, round(upd.change_pct, 2), upd.event, upd.operation
+
+            result = {
+                "ts": ts_iso,
+                "occupancy_pct": round(occ.pct, 2),
+                "occupied_m2": round(occ.m2, 2),
+                "count_container": occ.count_by_class.get("container", 0),
+                "count_other": occ.count_by_class.get("other", 0),
+                "count_by_stack_level": occ.count_by_stack_level,
+                "change_pct": change_pct,
+                "state": mode,
+                "operation": {"event": event, **operation} if operation else None,
+                "flags": flags,
+                "calibration_version": self.cal.version,
+                "model_version": getattr(self.detector, "model_version", "unknown"),
+            }
+            items = [p.to_dict() for p in occ.items]
+            try:
+                self.store.commit_frame(result, items, state, operation, path)
+            except sqlite3.IntegrityError:
+                # Backstop: another writer beat us to this ts despite the re-check above.
+                stored = self.store.get_frame(ts_iso, include_items=include_items)
+                if stored is not None:
+                    return stored
+                raise
+            return {**result, "items": items} if include_items else result

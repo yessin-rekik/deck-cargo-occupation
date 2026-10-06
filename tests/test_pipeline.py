@@ -1,3 +1,4 @@
+import threading
 from datetime import datetime, timedelta, timezone
 
 import numpy as np
@@ -119,3 +120,87 @@ def test_frame_lookup(setup):
     pipe.analyze(jpeg_bytes(), at(0))
     assert pipe.frame("2026-09-20T08:00:00Z")["ts"] == "2026-09-20T08:00:00Z"
     assert pipe.frame("2026-09-20T09:00:00Z") is None
+
+
+@pytest.fixture
+def two_pipelines(tmp_path):
+    cfg = load_config(write_config(tmp_path, make_calibration()))
+    det_a, det_b = FakeDetector(), FakeDetector()
+    pipe_a = Pipeline(cfg, det_a, Store(cfg.db_path))
+    pipe_b = Pipeline(cfg, det_b, Store(cfg.db_path))
+    return pipe_a, det_a, pipe_b, det_b
+
+
+def test_same_ts_from_two_processes_is_idempotent(two_pipelines):
+    pipe_a, det_a, pipe_b, det_b = two_pipelines
+    det_a.items = det_b.items = [container(2.0, 5.0)]
+    r1 = pipe_a.analyze(jpeg_bytes(), at(0))
+    r2 = pipe_b.analyze(jpeg_bytes(), at(0))
+    assert r1 == r2
+    assert pipe_a.store.conn.execute("SELECT COUNT(*) FROM frames").fetchone()[0] == 1
+
+
+def test_two_writers_interleaved_keep_state_consistent(two_pipelines):
+    pipe_a, det_a, pipe_b, det_b = two_pipelines
+    det_a.items = det_b.items = [container(2.0, 5.0)]
+    pipe_a.analyze(jpeg_bytes(), at(0))
+    pipe_b.analyze(jpeg_bytes(), at(3))
+    det_a.items = det_b.items = [container(2.0, 5.0), container(2.0, 12.0)]
+    pipe_a.analyze(jpeg_bytes(), at(6))
+    r = pipe_b.analyze(jpeg_bytes(), at(9))
+    assert r["state"] == "ACTIVE"
+    assert r["operation"]["event"] == "T1" and r["operation"]["t1"] == "2026-09-20T08:06:00Z"
+
+
+def test_concurrent_writers_never_crash(tmp_path):
+    cfg = load_config(write_config(tmp_path, make_calibration()))
+    pipe_a = Pipeline(cfg, FakeDetector(), Store(cfg.db_path))
+    pipe_b = Pipeline(cfg, FakeDetector(), Store(cfg.db_path))
+    timestamps = [at(m) for m in range(0, 24, 3)]  # 8 distinct increasing timestamps
+    errors = []
+    err_lock = threading.Lock()
+
+    def worker(pipe, ts_list):
+        for ts in ts_list:
+            try:
+                pipe.analyze(jpeg_bytes(), ts)
+            except BaseException as exc:  # capture anything; asserted below
+                with err_lock:
+                    errors.append(exc)
+
+    threads = [
+        threading.Thread(target=worker, args=(pipe_a, timestamps[0::2])),
+        threading.Thread(target=worker, args=(pipe_b, timestamps[1::2])),
+    ]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    for exc in errors:
+        assert isinstance(exc, PipelineError) and exc.code == "out_of_order", repr(exc)
+
+    store = Store(cfg.db_path)
+    assert store.load_state()["last_ts"] == store.last_ts()
+
+
+def test_op_ids_continue_after_state_loss(setup):
+    pipe, det = setup
+    det.items = [container(2.0, 5.0)]
+    pipe.analyze(jpeg_bytes(), at(0))
+    pipe.analyze(jpeg_bytes(), at(3))
+    det.items = [container(2.0, 5.0), container(2.0, 12.0)]
+    pipe.analyze(jpeg_bytes(), at(6))
+    r = pipe.analyze(jpeg_bytes(), at(9))
+    assert r["operation"]["id"] == 1
+
+    pipe.store.conn.execute("DELETE FROM state")
+
+    det.items = [container(2.0, 5.0), container(2.0, 12.0)]
+    r2 = pipe.analyze(jpeg_bytes(), at(20))
+    assert r2["operation"] is None
+
+    det.items = [container(2.0, 5.0)]
+    r3 = pipe.analyze(jpeg_bytes(), at(40))
+    assert r3["operation"]["event"] == "T2"
+    assert r3["operation"]["id"] == 2
