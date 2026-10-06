@@ -34,7 +34,10 @@ class Pipeline:
         self.config = config
         self.detector = detector
         self.store = store
-        self.cal = Calibration.from_dict(config.calibration)
+        try:
+            self.cal = Calibration.from_dict(config.calibration)
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ConfigError(f"deck.yaml calibration section is invalid: {exc}") from exc
         if refs is None:
             centers = {n: p.image for n, p in self.cal.points.items() if n.startswith("W") and p.status == "clicked"}
             refs = load_refs(config.drift.refs_dir, centers)

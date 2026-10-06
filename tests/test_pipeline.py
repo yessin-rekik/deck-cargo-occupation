@@ -104,6 +104,16 @@ def test_missing_calibration_raises(tmp_path):
         Pipeline(cfg, FakeDetector(), Store(cfg.db_path))
 
 
+def test_malformed_calibration_raises_config_error(tmp_path):
+    cal = make_calibration()
+    bad = cal.to_dict()
+    del bad["points"]["F1"]["deck"]
+    cfg = load_config(write_config(tmp_path))
+    cfg = type(cfg)(**{**cfg.__dict__, "calibration": bad})
+    with pytest.raises(ConfigError, match="calibration section is invalid"):
+        Pipeline(cfg, FakeDetector(), Store(cfg.db_path))
+
+
 def test_frame_lookup(setup):
     pipe, _ = setup
     pipe.analyze(jpeg_bytes(), at(0))
