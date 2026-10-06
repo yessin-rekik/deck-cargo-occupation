@@ -85,8 +85,9 @@ Grounding DINO / SAM) live in a separate `training` extra.
 
 ### 5.1 Calibration (`calibration.py`, `deckwatch calibrate`)
 
-**Deck coordinate frame:** the origin is at F1 (far-left corner of the cargo area, as seen by
-the camera). X runs across the deck, Y runs along it toward the camera, Z is up, in metres.
+**Deck coordinate frame (right-handed, metres):** the origin is at F4 (near-left corner of the
+cargo area, as seen by the camera). X runs across the deck to the right, Y runs along it away
+from the camera, Z is up. So F1 = (0, L, 0), F2 = (W, L, 0), F3 = (W, 0, 0), F4 = (0, 0, 0).
 
 **User-supplied measurements** (stored in `deck.yaml`):
 - Cargo-area length and width.
@@ -189,12 +190,18 @@ From **P**:
 
 ### 5.4 Operations (`operations.py`)
 
-**Change signal** between frame *t* and the last stable footprint *S*:
-`change = area(U_t Δ S) / area(cargo_area)` (symmetric difference). This catches swaps that leave
-the % almost the same. A frame is *changed* if `change > change_min` (default 1.5%).
+**Change signal** between frame *t* and the last stable item set *S*:
+- Match the items one-to-one: footprint IoU ≥ `match_iou` (0.3) and height difference
+  ≤ `unit_height / 2`.
+- `changed_m2` = area of unmatched items (appeared + disappeared).
+- A frame is *changed* if `changed_m2 > change_min_m2` (default 2.0 m², below the footprint of
+  a 10 ft container). `change_pct` = `changed_m2` as a % of the cargo area.
+- Why items rather than the union's symmetric difference: corner noise on every item would add
+  up over a full deck and exceed one container's area. Matching ignores that noise but still
+  catches swaps and re-stacks.
 
 **Confirmation:** a change only counts once the next frame also differs from *S* by more than
-`change_min`. This filters one-frame detector flicker.
+`change_min_m2`. This filters one-frame detector flicker.
 
 **State machine:**
 
@@ -203,8 +210,8 @@ IDLE ──(confirmed change)──▶ ACTIVE ──(no change vs. running footp
       T1 = ts of first changed frame          T2 = ts of last changed frame
 ```
 
-- While ACTIVE, the running footprint is updated every frame. "No change" means consecutive
-  frames differ by `≤ change_min`.
+- While ACTIVE, the running item set is updated every frame. "No change" means consecutive
+  frames differ by `≤ change_min_m2`.
 - `quiet_period` defaults to 30 min. It's time-based, not a frame count, so it works at 3-min and
   20-min cadence alike.
 - Frames flagged `drift_suspected` are stored but **excluded** from state decisions.
