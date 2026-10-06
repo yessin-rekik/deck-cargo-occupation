@@ -1,0 +1,44 @@
+# DeckWatch configuration. Relative paths are resolved against this file's directory.
+# Copy to config/deck.yaml and fill in every `deck` value with measurements taken on the vessel.
+# DeckWatch refuses to start while any deck value is empty.
+image_size: [3840, 2160]
+filename_tz: UTC          # dataset filenames are UTC; the CAMO1 overlay shows local time (UTC+03:30)
+db_path: ../deckwatch.db
+
+deck:                     # metres, measured on the vessel - REQUIRED, no defaults
+  length_m:               # brown cargo area along the deck (near edge -> far edge)
+  width_m:                # brown cargo area across the deck
+  wall_height_m:          # wall top above the deck surface
+  wall_offset_m:          # wall tops' horizontal offset outward from the floor corners (0 if directly above)
+
+detector:
+  model_path: ../models/deckwatch-pose.onnx
+  imgsz: 1280
+  conf_min: 0.4
+  nms_iou: 0.5
+  kp_conf_min: 0.5
+
+geometry:
+  unit_height_m: 2.6
+  max_stack: 3
+  default_height_m: {container: 2.6, other: 1.0}
+  size_tol: 0.15
+  standard_sizes:
+    - {name: 10ft, length_m: 2.99, width_m: 2.44}
+    - {name: 20ft, length_m: 6.06, width_m: 2.44}
+
+operations:
+  change_min_m2: 2.0
+  quiet_period_min: 30
+  gap_max_min: 15
+  match_iou: 0.3
+
+drift:
+  refs_dir: drift_refs
+  patch_px: 48
+  search_px: 60
+  match_min: 0.6
+  drift_px: 15
+  min_points: 2
+
+# calibration: written by `deckwatch calibrate`
